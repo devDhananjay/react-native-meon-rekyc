@@ -1,0 +1,19 @@
+# Source control
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Testing
+__tests__/
+coverage/
+
+# Documentation (optional)
+docs/
+examples/
+
+# Misc
+*.log
+.DS_Store

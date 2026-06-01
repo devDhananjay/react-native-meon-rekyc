@@ -1,0 +1,44 @@
+{
+  "name": "react-native-meon-rekyc",
+  "version": "1.0.2",
+  "description": "Re-KYC SDK for React Native with company login and deeplink WebView flow",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devDhananjay/react-native-meon-rekyc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/devDhananjay/react-native-meon-rekyc/issues"
+  },
+  "homepage": "https://github.com/devDhananjay/react-native-meon-rekyc#readme",
+  "keywords": [
+    "react-native",
+    "rekyc",
+    "re-kyc",
+    "kyc",
+    "meon",
+    "verification",
+    "deeplink",
+    "webview"
+  ],
+  "author": "Dhananjay (dhananjay@meon.co.in)",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": ">=16.8.0",
+    "react-native": ">=0.60.0"
+  },
+  "dependencies": {
+    "react-native-webview": ">=11.0.0",
+    "react-native-permissions": ">=3.0.0"
+  },
+  "scripts": {
+    "prepublishOnly": "npm pack --dry-run",
+    "publish:public": "npm publish --access public"
+  }
+}

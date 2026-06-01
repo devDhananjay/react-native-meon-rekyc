@@ -10,6 +10,29 @@ npm install react-native-meon-rekyc react-native-webview react-native-permission
 
 ### iOS
 
+**Required:** Add `setup_permissions` in `ios/Podfile` (without this, IPV/camera will crash):
+
+```ruby
+def node_require(script)
+  require Pod::Executable.execute_command('node', ['-p',
+    "require.resolve('#{script}', {paths: [process.argv[1]]})", __dir__]).strip
+end
+
+node_require('react-native/scripts/react_native_pods.rb')
+node_require('react-native-permissions/scripts/setup.rb')
+
+platform :ios, min_ios_version_supported
+prepare_react_native_project!
+
+setup_permissions([
+  'Camera',
+  'Microphone',
+  'LocationWhenInUse',
+])
+```
+
+Then:
+
 ```bash
 cd ios && pod install
 ```
@@ -51,8 +74,8 @@ const ReKycScreen = () => {
         username="" //dhananjay@meon.co.in
         password="" //123456
         company_id="" //1
-        workflow_id="" //7cd3b329-7b79-46c4-b4f3
-        client_code="" //meon1
+        workflow_id="7cd3b329-7b79-46c4-b4f3"
+        client_code="" //meon
         baseURL="https://rekyc.meon.co.in"
         onSuccess={(data) => console.log('Re-KYC ready:', data)}
         onError={(error) => console.log('Re-KYC error:', error)}

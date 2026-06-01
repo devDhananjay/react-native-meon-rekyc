@@ -1,4 +1,4 @@
-const DEFAULT_BASE_URL = 'https://rekycuat.meon.co.in';
+const DEFAULT_BASE_URL = 'https://rekyc.meon.co.in';
 
 const parseJsonResponse = async (response) => {
   const text = await response.text();

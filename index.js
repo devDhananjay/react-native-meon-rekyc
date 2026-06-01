@@ -30,6 +30,12 @@ const REQUIRED_FIELDS = [
   { key: 'client_code', label: 'client_code' },
 ];
 
+const checkIfIpvStep = (url) =>
+  !!url &&
+  (url.includes('face-finder.meon.co.in') ||
+    url.toLowerCase().includes('/ipv') ||
+    url.toLowerCase().includes('/ipv/'));
+
 const MeonReKYC = ({
   username,
   password,
@@ -42,6 +48,7 @@ const MeonReKYC = ({
   onClose,
   showHeader = true,
   headerTitle = 'Re-KYC',
+  showRefreshButton = true,
   customStyles = {},
   autoRequestPermissions = true,
 }) => {
@@ -56,14 +63,6 @@ const MeonReKYC = ({
   const webViewRef = useRef(null);
   const sessionStartedRef = useRef(false);
   const ipvPermissionRequestedRef = useRef(false);
-
-  const checkIfIpvStep = (url) =>
-    !!url &&
-    (url.includes('face-finder.meon.co.in') ||
-      url.toLowerCase().includes('/ipv') ||
-      url.toLowerCase().includes('face') ||
-      url.toLowerCase().includes('video') ||
-      url.toLowerCase().includes('recording'));
 
   const validateProps = useCallback(() => {
     const values = { username, password, company_id, workflow_id, client_code };
@@ -82,7 +81,7 @@ const MeonReKYC = ({
     return true;
   }, [username, password, company_id, workflow_id, client_code, onError]);
 
-  const requestPermissions = useCallback(async () => {
+  const requestPermissions = useCallback(async ({ showAlert = true } = {}) => {
     if (!autoRequestPermissions) {
       setPermissionsGranted(true);
       return true;
@@ -96,13 +95,13 @@ const MeonReKYC = ({
           PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION,
         ]);
 
-        const cameraGranted =
-          results[PERMISSIONS.ANDROID.CAMERA] === RESULTS.GRANTED;
-        const micGranted =
+        const granted =
+          results[PERMISSIONS.ANDROID.CAMERA] === RESULTS.GRANTED &&
           results[PERMISSIONS.ANDROID.RECORD_AUDIO] === RESULTS.GRANTED;
-        const granted = cameraGranted && micGranted;
+
         setPermissionsGranted(granted);
-        if (!granted) {
+
+        if (!granted && showAlert) {
           Alert.alert(
             'Permissions Required',
             'Camera and microphone access are required for video verification.',
@@ -113,6 +112,7 @@ const MeonReKYC = ({
             ],
           );
         }
+
         return granted;
       }
 
@@ -125,7 +125,8 @@ const MeonReKYC = ({
         microphoneResult === RESULTS.GRANTED;
 
       setPermissionsGranted(granted);
-      if (!granted) {
+
+      if (!granted && showAlert) {
         Alert.alert(
           'Permissions Required',
           'Camera and microphone access are required for video verification.',
@@ -136,12 +137,60 @@ const MeonReKYC = ({
           ],
         );
       }
+
       return granted;
     } catch (permissionError) {
       console.error('[MeonReKYC] Permission error:', permissionError);
       return false;
     }
   }, [autoRequestPermissions]);
+
+  const buildPermissionInjectionScript = useCallback(
+    (granted) => `
+    (function() {
+      const granted = ${granted};
+      const permissions = ['camera', 'microphone', 'geolocation'];
+      const storePermission = (name, state) => {
+        try {
+          sessionStorage.setItem('permission_' + name, state);
+          localStorage.setItem('permission_' + name, state);
+        } catch (e) {}
+      };
+      permissions.forEach((name) => {
+        storePermission(name, granted ? 'granted' : 'prompt');
+      });
+      window.permissionsGranted = granted;
+      if (navigator.permissions && navigator.permissions.query) {
+        const originalQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = function(desc) {
+          if (permissions.includes(desc.name)) {
+            return Promise.resolve({ state: granted ? 'granted' : 'prompt', onchange: null });
+          }
+          return originalQuery(desc);
+        };
+      }
+    })();
+    true;
+  `,
+    [],
+  );
+
+  const injectPermissionScripts = useCallback(
+    (grantedOverride) => {
+      const granted =
+        typeof grantedOverride === 'boolean' ? grantedOverride : permissionsGranted;
+      webViewRef.current?.injectJavaScript(
+        buildPermissionInjectionScript(granted),
+      );
+    },
+    [buildPermissionInjectionScript, permissionsGranted],
+  );
+
+  useEffect(() => {
+    if (deeplink && permissionsGranted) {
+      injectPermissionScripts();
+    }
+  }, [deeplink, permissionsGranted, injectPermissionScripts]);
 
   const startSession = useCallback(async () => {
     if (sessionStartedRef.current) {
@@ -159,12 +208,11 @@ const MeonReKYC = ({
 
     try {
       if (autoRequestPermissions) {
-        await requestPermissions();
+        await requestPermissions({ showAlert: false });
       } else {
         setPermissionsGranted(true);
       }
 
-      console.log('[MeonReKYC] Starting company login...');
       const session = await initializeReKycSession({
         username: String(username).trim(),
         password: String(password),
@@ -174,7 +222,6 @@ const MeonReKYC = ({
         baseURL,
       });
 
-      console.log('[MeonReKYC] Deeplink received:', session.deeplink);
       setDeeplink(session.deeplink);
       onSuccess?.({
         status: 'session_ready',
@@ -185,7 +232,6 @@ const MeonReKYC = ({
     } catch (sessionError) {
       const message =
         sessionError?.message || 'Failed to initialize Re-KYC session';
-      console.error('[MeonReKYC] Session error:', message);
       setError(message);
       onError?.(message);
       sessionStartedRef.current = false;
@@ -226,6 +272,40 @@ const MeonReKYC = ({
     return () => subscription.remove();
   }, [canGoBack]);
 
+  const handleWebViewNavigationStateChange = useCallback(
+    async (navState) => {
+      setCanGoBack(navState.canGoBack);
+
+      const onIpv = checkIfIpvStep(navState.url);
+      setIsIpvStep(onIpv);
+
+      if (onIpv && !navState.loading) {
+        if (
+          !ipvPermissionRequestedRef.current &&
+          autoRequestPermissions &&
+          !permissionsGranted
+        ) {
+          ipvPermissionRequestedRef.current = true;
+          const granted = await requestPermissions({ showAlert: true });
+          injectPermissionScripts(granted);
+          if (granted) {
+            webViewRef.current?.reload();
+          }
+        } else {
+          injectPermissionScripts(permissionsGranted);
+        }
+      } else if (!onIpv) {
+        ipvPermissionRequestedRef.current = false;
+      }
+    },
+    [
+      autoRequestPermissions,
+      injectPermissionScripts,
+      permissionsGranted,
+      requestPermissions,
+    ],
+  );
+
   const handleClose = () => {
     Alert.alert('Close Re-KYC', 'Are you sure you want to close?', [
       { text: 'Cancel', style: 'cancel' },
@@ -240,77 +320,12 @@ const MeonReKYC = ({
   };
 
   const handleRefresh = () => {
-    if (webViewRef.current && deeplink) {
-      ipvPermissionRequestedRef.current = false;
-      setIsIpvStep(false);
-      webViewRef.current.reload();
+    if (!webViewRef.current) {
       return;
     }
-    handleRetry();
+    setWebViewLoading(true);
+    webViewRef.current.reload();
   };
-
-  const injectPermissionScripts = useCallback(() => {
-    const script = `
-      (function() {
-        const granted = ${permissionsGranted};
-        const permissions = ['camera', 'microphone', 'geolocation'];
-        const storePermission = (name, state) => {
-          try {
-            sessionStorage.setItem('permission_' + name, state);
-            localStorage.setItem('permission_' + name, state);
-          } catch (e) {}
-        };
-        permissions.forEach((name) => {
-          storePermission(name, granted ? 'granted' : 'denied');
-        });
-        if (navigator.permissions && navigator.permissions.query) {
-          const originalQuery = navigator.permissions.query;
-          navigator.permissions.query = function(desc) {
-            if (permissions.includes(desc.name)) {
-              return Promise.resolve({ state: granted ? 'granted' : 'denied', onchange: null });
-            }
-            return originalQuery.call(this, desc);
-          };
-        }
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-          navigator.mediaDevices.getUserMedia = function(constraints) {
-            if (!granted) {
-              return Promise.reject(new Error('Permissions not granted'));
-            }
-            return originalGetUserMedia(constraints);
-          };
-        }
-      })();
-      true;
-    `;
-    webViewRef.current?.injectJavaScript(script);
-  }, [permissionsGranted]);
-
-  const handleWebViewNavigationStateChange = useCallback(
-    async (navState) => {
-      setCanGoBack(navState.canGoBack);
-      const isCurrentlyIpv = checkIfIpvStep(navState.url);
-
-      if (
-        isCurrentlyIpv &&
-        !ipvPermissionRequestedRef.current &&
-        !navState.loading &&
-        autoRequestPermissions
-      ) {
-        ipvPermissionRequestedRef.current = true;
-        setIsIpvStep(true);
-        const granted = await requestPermissions();
-        if (granted) {
-          webViewRef.current?.reload();
-        }
-      } else if (!isCurrentlyIpv && isIpvStep) {
-        setIsIpvStep(false);
-        ipvPermissionRequestedRef.current = false;
-      }
-    },
-    [autoRequestPermissions, isIpvStep, requestPermissions],
-  );
 
   const renderHeader = () => {
     if (!showHeader) {
@@ -333,13 +348,21 @@ const MeonReKYC = ({
         <Text style={[styles.headerTitle, customStyles.headerTitle]}>
           {isIpvStep ? 'Video Verification' : headerTitle}
         </Text>
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={handleRefresh}
-          accessibilityLabel="Refresh"
-        >
-          <Text style={styles.headerButtonText}>↻</Text>
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          {showRefreshButton ? (
+            <TouchableOpacity
+              style={styles.headerButton}
+              onPress={handleRefresh}
+              accessibilityLabel="Refresh page"
+              accessibilityRole="button"
+            >
+              <Text style={styles.headerButtonText}>⟳</Text>
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity style={styles.headerButton} onPress={handleClose}>
+            <Text style={styles.headerButtonText}>✕</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   };
@@ -429,6 +452,7 @@ const MeonReKYC = ({
             window.permissionsGranted = ${permissionsGranted};
             true;
           `}
+          injectedJavaScript={buildPermissionInjectionScript(permissionsGranted)}
         />
       </View>
     </View>
@@ -459,7 +483,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerButtonText: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '600',
   },
   headerTitle: {
@@ -468,6 +492,11 @@ const styles = StyleSheet.create({
     color: '#333',
     flex: 1,
     textAlign: 'center',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   webViewContainer: {
     flex: 1,

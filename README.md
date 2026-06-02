@@ -110,6 +110,10 @@ export default ReKycScreen;
 | `showHeader` | `boolean` | No | `true` | Show header bar |
 | `headerTitle` | `string` | No | `Re-KYC` | Header title |
 | `autoRequestPermissions` | `boolean` | No | `true` | Request camera/mic/location |
+| `showRefreshButton` | `boolean` | No | `false` | Header refresh (reload WebView) |
+| `userAgent` | `string` | No | Safari (iOS) / Chrome (Android) | WebView user agent (fixes date picker on iOS) |
+| `enableWebViewDebug` | `boolean` | No | `__DEV__` | Bridge console/errors to Metro via `onWebMessage` |
+| `onWebMessage` | `function` | No | - | Receives `{ bridge, message, level, ... }` from WebView |
 | `customStyles` | `object` | No | `{}` | Style overrides |
 
 ## Exported Helpers

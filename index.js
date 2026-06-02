@@ -36,6 +36,46 @@ const checkIfIpvStep = (url) =>
     url.toLowerCase().includes('/ipv') ||
     url.toLowerCase().includes('/ipv/'));
 
+const getDefaultUserAgent = () => {
+  if (Platform.OS === 'ios') {
+    return 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  }
+  return 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+};
+
+// iOS crashes if WKWebView native alert/confirm handlers are invoked without completionHandler.
+// Re-KYC pages call alert() on date-picker flows — override before page scripts run.
+const DIALOG_OVERRIDE_BEFORE_CONTENT = `
+(function() {
+  if (window.__meonRekycDialogPatched) { return; }
+  window.__meonRekycDialogPatched = true;
+  const postDialog = function(payload) {
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+      }
+    } catch (e) {}
+  };
+  window.alert = function(message) {
+    postDialog({ bridge: 'dialog', type: 'alert', message: message == null ? '' : String(message) });
+  };
+  window.confirm = function(message) {
+    postDialog({ bridge: 'dialog', type: 'confirm', message: message == null ? '' : String(message) });
+    return true;
+  };
+  window.prompt = function(message, defaultValue) {
+    postDialog({
+      bridge: 'dialog',
+      type: 'prompt',
+      message: message == null ? '' : String(message),
+      defaultValue: defaultValue == null ? '' : String(defaultValue),
+    });
+    return defaultValue == null ? '' : String(defaultValue);
+  };
+})();
+true;
+`;
+
 const MeonReKYC = ({
   username,
   password,
@@ -51,7 +91,11 @@ const MeonReKYC = ({
   showRefreshButton = true,
   customStyles = {},
   autoRequestPermissions = true,
+  userAgent,
+  enableWebViewDebug = __DEV__,
+  onWebMessage,
 }) => {
+  const resolvedUserAgent = userAgent || getDefaultUserAgent();
   const [isInitializing, setIsInitializing] = useState(true);
   const [webViewLoading, setWebViewLoading] = useState(false);
   const [deeplink, setDeeplink] = useState(null);
@@ -145,7 +189,7 @@ const MeonReKYC = ({
     }
   }, [autoRequestPermissions]);
 
-  const buildPermissionInjectionScript = useCallback(
+  const buildWebViewBootstrapScript = useCallback(
     (granted) => `
     (function() {
       const granted = ${granted};
@@ -169,21 +213,125 @@ const MeonReKYC = ({
           return originalQuery(desc);
         };
       }
+      if (!window.__meonRekycDialogPatched) {
+        window.__meonRekycDialogPatched = true;
+        const postDialog = function(payload) {
+          try {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+              window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+            }
+          } catch (e) {}
+        };
+        window.alert = function(message) {
+          postDialog({ bridge: 'dialog', type: 'alert', message: message == null ? '' : String(message) });
+        };
+        window.confirm = function(message) {
+          postDialog({ bridge: 'dialog', type: 'confirm', message: message == null ? '' : String(message) });
+          return true;
+        };
+        window.prompt = function(message, defaultValue) {
+          postDialog({
+            bridge: 'dialog',
+            type: 'prompt',
+            message: message == null ? '' : String(message),
+            defaultValue: defaultValue == null ? '' : String(defaultValue),
+          });
+          return defaultValue == null ? '' : String(defaultValue);
+        };
+      }
+      ${enableWebViewDebug ? `
+      if (!window.__meonRekycBridgeInstalled && window.ReactNativeWebView) {
+        window.__meonRekycBridgeInstalled = true;
+        const postBridge = (payload) => {
+          try {
+            window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+          } catch (e) {}
+        };
+        const levels = ['log', 'warn', 'error'];
+        levels.forEach((level) => {
+          const original = console[level];
+          console[level] = function() {
+            try {
+              const message = Array.prototype.slice.call(arguments).map((arg) => {
+                try { return typeof arg === 'object' ? JSON.stringify(arg) : String(arg); }
+                catch (e) { return String(arg); }
+              }).join(' ');
+              postBridge({ bridge: 'console', level, message });
+            } catch (e) {}
+            return original.apply(console, arguments);
+          };
+        });
+        window.addEventListener('error', function(event) {
+          postBridge({
+            bridge: 'error',
+            message: event && event.message ? String(event.message) : 'Unknown error',
+            source: event && event.filename ? String(event.filename) : '',
+            line: event && event.lineno ? event.lineno : 0,
+            col: event && event.colno ? event.colno : 0,
+          });
+        });
+        window.addEventListener('unhandledrejection', function(event) {
+          postBridge({
+            bridge: 'unhandledrejection',
+            message: event && event.reason ? String(event.reason) : 'Unhandled rejection',
+          });
+        });
+      }
+      ` : ''}
     })();
     true;
   `,
-    [],
+    [enableWebViewDebug],
   );
 
   const injectPermissionScripts = useCallback(
     (grantedOverride) => {
       const granted =
         typeof grantedOverride === 'boolean' ? grantedOverride : permissionsGranted;
-      webViewRef.current?.injectJavaScript(
-        buildPermissionInjectionScript(granted),
-      );
+      webViewRef.current?.injectJavaScript(buildWebViewBootstrapScript(granted));
     },
-    [buildPermissionInjectionScript, permissionsGranted],
+    [buildWebViewBootstrapScript, permissionsGranted],
+  );
+
+  const handleWebViewMessage = useCallback(
+    (event) => {
+      try {
+        const payload = JSON.parse(event.nativeEvent.data);
+        if (!payload?.bridge) {
+          return;
+        }
+
+        if (payload.bridge === 'dialog') {
+          const dialogMessage = String(payload.message || '');
+          if (payload.type === 'alert' && dialogMessage) {
+            Alert.alert('Re-KYC', dialogMessage);
+          }
+          onWebMessage?.(payload);
+          return;
+        }
+
+        if (enableWebViewDebug) {
+          console.log('[MeonReKYC WebView]', payload);
+        }
+
+        onWebMessage?.(payload);
+
+        const message = String(payload.message || '');
+        const isFatalBridge =
+          payload.bridge === 'error' ||
+          payload.bridge === 'unhandledrejection' ||
+          (payload.bridge === 'console' && payload.level === 'error');
+
+        if (isFatalBridge && /invalid date/i.test(message)) {
+          onError?.(message);
+        }
+      } catch (parseError) {
+        if (enableWebViewDebug) {
+          console.warn('[MeonReKYC] Failed to parse WebView message', parseError);
+        }
+      }
+    },
+    [enableWebViewDebug, onError, onWebMessage],
   );
 
   useEffect(() => {
@@ -447,12 +595,11 @@ const MeonReKYC = ({
           thirdPartyCookiesEnabled
           sharedCookiesEnabled
           cacheEnabled
-          userAgent="Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36"
-          injectedJavaScriptBeforeContentLoaded={`
-            window.permissionsGranted = ${permissionsGranted};
-            true;
-          `}
-          injectedJavaScript={buildPermissionInjectionScript(permissionsGranted)}
+          setSupportMultipleWindows={false}
+          allowsLinkPreview={false}
+          userAgent={resolvedUserAgent}
+          injectedJavaScriptBeforeContentLoaded={DIALOG_OVERRIDE_BEFORE_CONTENT}
+          onMessage={handleWebViewMessage}
         />
       </View>
     </View>

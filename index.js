@@ -340,6 +340,17 @@ const MeonReKYC = ({
     }
   }, [deeplink, permissionsGranted, injectPermissionScripts]);
 
+  useEffect(() => {
+    if (__DEV__) {
+      console.log('[MeonReKYC] deeplink state =>', deeplink);
+      console.log('[MeonReKYC] screen state =>', {
+        isInitializing,
+        error: error || null,
+        hasDeeplink: Boolean(deeplink),
+      });
+    }
+  }, [deeplink, isInitializing, error]);
+
   const startSession = useCallback(async () => {
     if (sessionStartedRef.current) {
       return;
@@ -370,6 +381,9 @@ const MeonReKYC = ({
         baseURL,
       });
 
+      if (__DEV__) {
+        console.log('[MeonReKYC] session deeplink =>', session.deeplink);
+      }
       setDeeplink(session.deeplink);
       onSuccess?.({
         status: 'session_ready',

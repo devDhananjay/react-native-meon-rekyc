@@ -1,6 +1,6 @@
 {
   "name": "react-native-meon-rekyc",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Re-KYC SDK for React Native with company login and deeplink WebView flow",
   "main": "index.js",
   "files": [

@@ -1,5 +1,11 @@
 const DEFAULT_BASE_URL = 'https://rekyc.meon.co.in';
 
+const logApi = (label, payload) => {
+  if (typeof __DEV__ !== 'undefined' && __DEV__) {
+    console.log(`[MeonReKYC API] ${label}`, payload);
+  }
+};
+
 const parseJsonResponse = async (response) => {
   const text = await response.text();
   try {
@@ -9,13 +15,41 @@ const parseJsonResponse = async (response) => {
   }
 };
 
+const getApiMessage = (data, fallback = 'Request failed') =>
+  data?.msg ||
+  data?.message ||
+  data?.error ||
+  data?.data?.msg ||
+  data?.data?.message ||
+  fallback;
+
+const extractDeeplink = (data) =>
+  data?.data?.deeplink ||
+  data?.data?.deep_link ||
+  data?.deeplink ||
+  data?.deep_link ||
+  null;
+
+const isApiSuccess = (data, response) =>
+  response.ok &&
+  (data?.success === true ||
+    data?.success === 'true' ||
+    String(data?.status || '').toLowerCase() === 'success');
+
 export const companyLogin = async ({
   username,
   password,
   companyId,
   baseURL = DEFAULT_BASE_URL,
 }) => {
-  const response = await fetch(`${baseURL}/v1/company/company-login`, {
+  const loginUrl = `${baseURL}/v1/company/company-login`;
+  logApi('REQUEST', {
+    method: 'POST',
+    url: loginUrl,
+    body: { username, company_id: String(companyId), password: '***' },
+  });
+
+  const response = await fetch(loginUrl, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -30,13 +64,22 @@ export const companyLogin = async ({
 
   const data = await parseJsonResponse(response);
 
-  if (!response.ok || !data?.success) {
-    throw new Error(data?.msg || 'Company login failed');
+  logApi('RESPONSE company-login', {
+    status: response.status,
+    ok: response.ok,
+    success: data?.success,
+    msg: data?.msg,
+    data: data?.data,
+    full: data,
+  });
+
+  if (!isApiSuccess(data, response)) {
+    throw new Error(getApiMessage(data, 'Company login failed'));
   }
 
   const accessToken = data?.data?.access_token;
   if (!accessToken) {
-    throw new Error('Access token not found in login response');
+    throw new Error(getApiMessage(data, 'Access token not found in login response'));
   }
 
   return {
@@ -57,6 +100,13 @@ export const getDeepLink = async ({
   const encodedClientCode = encodeURIComponent(String(clientCode));
   const url = `${baseURL}/v1/company/get_deep_link/${encodedWorkflowId}/${encodedClientCode}`;
 
+  logApi('REQUEST', {
+    method: 'GET',
+    url,
+    workflowId,
+    clientCode,
+  });
+
   const response = await fetch(url, {
     method: 'GET',
     headers: {
@@ -67,13 +117,24 @@ export const getDeepLink = async ({
 
   const data = await parseJsonResponse(response);
 
-  if (!response.ok || !data?.success) {
-    throw new Error(data?.msg || 'Failed to generate deeplink');
+  const deeplink = extractDeeplink(data);
+
+  logApi('RESPONSE get_deep_link', {
+    status: response.status,
+    ok: response.ok,
+    success: data?.success,
+    msg: data?.msg,
+    deeplink,
+    data: data?.data,
+    full: data,
+  });
+
+  if (!isApiSuccess(data, response)) {
+    throw new Error(getApiMessage(data, 'Failed to generate deeplink'));
   }
 
-  const deeplink = data?.data?.deeplink;
   if (!deeplink) {
-    throw new Error('Deeplink URL not found in response');
+    throw new Error(getApiMessage(data, 'Deeplink URL not found in response'));
   }
 
   return {
@@ -83,6 +144,14 @@ export const getDeepLink = async ({
 };
 
 export const initializeReKycSession = async (params) => {
+  logApi('initializeReKycSession start', {
+    baseURL: params.baseURL || DEFAULT_BASE_URL,
+    workflowId: params.workflowId,
+    clientCode: params.clientCode,
+    companyId: params.companyId,
+    username: params.username,
+  });
+
   const loginResult = await companyLogin(params);
   const deeplinkResult = await getDeepLink({
     workflowId: params.workflowId,
@@ -91,8 +160,15 @@ export const initializeReKycSession = async (params) => {
     baseURL: params.baseURL,
   });
 
-  return {
+  const session = {
     ...loginResult,
     ...deeplinkResult,
   };
+
+  logApi('initializeReKycSession done', {
+    deeplink: session.deeplink,
+    companyUsername: session.companyUsername,
+  });
+
+  return session;
 };
